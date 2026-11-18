@@ -3,9 +3,10 @@ import os
 import time
 import random
 import html
+import shutil
 from types import SimpleNamespace
-
 from asyncio import sleep
+
 from pyrogram import Client, filters
 from pyrogram.enums import MessageMediaType, ParseMode
 from pyrogram.errors import FloodWait
@@ -14,6 +15,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     ForceReply,
 )
+
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 
@@ -23,14 +25,12 @@ from helper.database import jishubotz
 
 
 def _get_media(message):
-    """Return the media object attached to a Telegram message."""
     if not message or not message.media:
         return None
     return getattr(message, message.media.value, None)
 
 
 def _add_prefix_suffix(filename, prefix=None, suffix=None):
-    """Add saved prefix/suffix without changing the supplied filename text."""
     stem, extension = os.path.splitext(filename)
     prefix = prefix or ""
     suffix = suffix or ""
@@ -42,6 +42,22 @@ def _selection_message(filename):
         "Select The Output File Type\n\n"
         f"File Name :- {filename}"
     )
+
+
+def _safe_remove(path):
+    if path and os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError as error:
+            print(f"Cleanup error for {path}: {error}")
+
+
+def _safe_remove_dir(path):
+    if path and os.path.isdir(path):
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError as error:
+            print(f"Directory cleanup error for {path}: {error}")
 
 
 @Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
@@ -259,8 +275,6 @@ async def refunc(client, message):
 
 @Client.on_callback_query(filters.regex("^upload"))
 async def doc(bot, update):
-    os.makedirs("Metadata", exist_ok=True)
-
     status_text = update.message.text or ""
     marker = "File Name :-"
 
@@ -276,6 +290,13 @@ async def doc(bot, update):
             "Filename is empty. Please send the file again."
         )
 
+    if (
+        "/" in requested_filename
+        or "\\" in requested_filename
+        or "\x00" in requested_filename
+    ):
+        return await update.message.edit("Invalid filename.")
+
     prefix = await jishubotz.get_prefix(update.message.chat.id)
     suffix = await jishubotz.get_suffix(update.message.chat.id)
 
@@ -285,13 +306,21 @@ async def doc(bot, update):
         suffix,
     )
 
-    file_path = os.path.join(
-        "downloads",
-        str(update.from_user.id),
-        new_filename,
+    # Give every rename task its own unique working directory.
+    work_dir = os.path.abspath(
+        os.path.join(
+            "downloads",
+            str(update.from_user.id),
+            f"job_{time.time_ns()}",
+        )
     )
 
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    os.makedirs(work_dir, exist_ok=True)
+
+    file_path = os.path.join(work_dir, new_filename)
+    metadata_file_path = None
+    thumb_path = None
+    screenshot_path = None
 
     original_file = getattr(update, "original_file", None)
 
@@ -299,6 +328,7 @@ async def doc(bot, update):
         original_file = update.message.reply_to_message
 
     if original_file is None:
+        _safe_remove_dir(work_dir)
         return await update.message.edit(
             "Download error: Original file message was not found. Please send the file again."
         )
@@ -306,6 +336,9 @@ async def doc(bot, update):
     status = await update.message.edit("🚀 Try To Download... ⚡")
 
     try:
+        # Ensure the destination directory exists immediately before download.
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
         downloaded_path = await bot.download_media(
             message=original_file,
             file_name=file_path,
@@ -317,135 +350,140 @@ async def doc(bot, update):
             ),
         )
 
-        if not downloaded_path:
-            return await status.edit("Download failed. Please try again.")
+        if not downloaded_path or not os.path.isfile(downloaded_path):
+            raise FileNotFoundError(
+                "Downloaded file was not created. Please try again."
+            )
 
-        file_path = downloaded_path
+        file_path = os.path.abspath(downloaded_path)
 
     except Exception as error:
+        _safe_remove_dir(work_dir)
         return await status.edit(f"Download error: `{error}`")
 
-    metadata_file_path = None
-
-    metadata_enabled = await jishubotz.get_metadata(
-        update.message.chat.id
-    )
-
-    if metadata_enabled:
-        metadata_fields = await jishubotz.get_metadata_fields(
+    try:
+        metadata_enabled = await jishubotz.get_metadata(
             update.message.chat.id
         )
 
-        if metadata_fields:
-            metadata_target = os.path.join(
-                "Metadata",
-                new_filename,
+        if metadata_enabled:
+            metadata_fields = await jishubotz.get_metadata_fields(
+                update.message.chat.id
             )
 
-            metadata_file_path = await add_metadata(
-                file_path,
-                metadata_target,
-                metadata_fields,
-                status,
-            )
-    else:
-        await status.edit("⏳ Mode Changing... ⚡")
+            if metadata_fields:
+                metadata_dir = os.path.join(work_dir, "Metadata")
+                os.makedirs(metadata_dir, exist_ok=True)
 
-    upload_path = (
-        metadata_file_path
-        if metadata_file_path and os.path.exists(metadata_file_path)
-        else file_path
-    )
+                metadata_target = os.path.join(
+                    metadata_dir,
+                    new_filename,
+                )
 
-    duration = 0
-    parser = None
-
-    try:
-        parser = createParser(file_path)
-
-        if parser:
-            parsed_metadata = extractMetadata(parser)
-
-            if parsed_metadata and parsed_metadata.has("duration"):
-                duration = parsed_metadata.get("duration").seconds
-
-    except Exception as error:
-        print(f"Could not read media duration: {error}")
-
-    finally:
-        if parser:
-            parser.close()
-
-    media = _get_media(original_file)
-
-    if not media:
-        return await status.edit(
-            "Could not read the original media details."
-        )
-
-    thumb_path = None
-
-    custom_caption = await jishubotz.get_caption(
-        update.message.chat.id
-    )
-
-    custom_thumb = await jishubotz.get_thumbnail(
-        update.message.chat.id
-    )
-
-    if custom_caption:
-        try:
-            caption = custom_caption.format(
-                filename=new_filename,
-                filesize=humanbytes(media.file_size),
-                duration=convert(duration),
-            )
-
-            caption_parse_mode = None
-
-        except Exception as error:
-            return await status.edit(
-                f"Your Caption Error Except Keyword Argument: ({error})"
-            )
-
-    else:
-        caption = f"<code>{html.escape(new_filename)}</code>"
-        caption_parse_mode = ParseMode.HTML
-
-    if media.thumbs or custom_thumb:
-        if custom_thumb:
-            try:
-                thumb_path = await bot.download_media(custom_thumb)
-                _, _, thumb_path = await fix_thumb(thumb_path)
-
-            except Exception as error:
-                thumb_path = None
-                print(f"Could not prepare custom thumbnail: {error}")
+                metadata_file_path = await add_metadata(
+                    file_path,
+                    metadata_target,
+                    metadata_fields,
+                    status,
+                )
 
         else:
+            await status.edit("⏳ Mode Changing... ⚡")
+
+        upload_path = (
+            metadata_file_path
+            if metadata_file_path and os.path.isfile(metadata_file_path)
+            else file_path
+        )
+
+        duration = 0
+        parser = None
+
+        try:
+            parser = createParser(file_path)
+
+            if parser:
+                parsed_metadata = extractMetadata(parser)
+
+                if parsed_metadata and parsed_metadata.has("duration"):
+                    duration = parsed_metadata.get("duration").seconds
+
+        except Exception as error:
+            print(f"Could not read media duration: {error}")
+
+        finally:
+            if parser:
+                parser.close()
+
+        media = _get_media(original_file)
+
+        if not media:
+            return await status.edit(
+                "Could not read the original media details."
+            )
+
+        custom_caption = await jishubotz.get_caption(
+            update.message.chat.id
+        )
+
+        custom_thumb = await jishubotz.get_thumbnail(
+            update.message.chat.id
+        )
+
+        if custom_caption:
             try:
-                screenshot_time = random.randint(
-                    0,
-                    max(duration - 1, 0),
+                caption = custom_caption.format(
+                    filename=new_filename,
+                    filesize=humanbytes(media.file_size),
+                    duration=convert(duration),
                 )
-
-                screenshot_path = await take_screen_shot(
-                    file_path,
-                    os.path.dirname(os.path.abspath(file_path)),
-                    screenshot_time,
-                )
-
-                _, _, thumb_path = await fix_thumb(screenshot_path)
+                caption_parse_mode = None
 
             except Exception as error:
-                thumb_path = None
-                print(f"Could not create thumbnail: {error}")
+                return await status.edit(
+                    f"Your Caption Error Except Keyword Argument: ({error})"
+                )
 
-    await status.edit("💠 Try To Upload... ⚡")
+        else:
+            caption = f"<code>{html.escape(new_filename)}</code>"
+            caption_parse_mode = ParseMode.HTML
 
-    output_type = update.data.split("_", 1)[1]
+        if media.thumbs or custom_thumb:
+            if custom_thumb:
+                try:
+                    thumb_path = await bot.download_media(custom_thumb)
 
-    try:
+                    if thumb_path:
+                        _, _, thumb_path = await fix_thumb(thumb_path)
+
+                except Exception as error:
+                    thumb_path = None
+                    print(f"Could not prepare custom thumbnail: {error}")
+
+            else:
+                try:
+                    screenshot_time = random.randint(
+                        0,
+                        max(duration - 1, 0),
+                    )
+
+                    screenshot_path = await take_screen_shot(
+                        file_path,
+                        work_dir,
+                        screenshot_time,
+                    )
+
+                    if screenshot_path:
+                        _, _, thumb_path = await fix_thumb(screenshot_path)
+
+                except Exception as error:
+                    thumb_path = None
+                    print(f"Could not create thumbnail: {error}")
+
+        await status.edit("💠 Try To Upload... ⚡")
+
+        output_type = update.data.split("_", 1)[1]
+
         common = {
             "caption": caption,
             "parse_mode": caption_parse_mode,
@@ -487,37 +525,34 @@ async def doc(bot, update):
                 "Unknown output format selected."
             )
 
+        await status.delete()
+
     except FloodWait as error:
         await sleep(error.value)
-
-        return await status.edit(
-            "Telegram asked the bot to wait. Please try the rename again."
-        )
+        try:
+            await status.edit(
+                "Telegram asked the bot to wait. Please try the rename again."
+            )
+        except Exception:
+            pass
 
     except Exception as error:
-        for cleanup_path in (
-            file_path,
-            metadata_file_path,
-            thumb_path,
-        ):
-            if cleanup_path and os.path.exists(cleanup_path):
-                try:
-                    os.remove(cleanup_path)
-                except OSError:
-                    pass
+        print(f"Rename/upload error: {error}")
 
-        return await status.edit(f"Error: `{error}`")
+        try:
+            await status.edit(f"Error: `{error}`")
+        except Exception:
+            pass
 
-    await status.delete()
+    finally:
+        # Remove this task's files without affecting another active download.
+        _safe_remove(thumb_path)
+        _safe_remove(screenshot_path)
 
-    for cleanup_path in (
-        file_path,
-        metadata_file_path,
-        thumb_path,
-    ):
-        if cleanup_path and os.path.exists(cleanup_path):
-            try:
-                os.remove(cleanup_path)
-            except OSError:
-                pass
-            
+        if thumb_path and os.path.abspath(thumb_path).startswith(work_dir):
+            pass
+        else:
+            _safe_remove(thumb_path)
+
+        _safe_remove_dir(work_dir)
+        
