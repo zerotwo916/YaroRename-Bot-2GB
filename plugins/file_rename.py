@@ -1,5 +1,6 @@
 
 import os
+import re
 import time
 import random
 import html
@@ -32,10 +33,27 @@ def _get_media(message):
 
 def _normalize_filename(filename):
     """
-    Remove underscores from the complete filename, including any
-    prefix/suffix, and replace them with single spaces.
+    Replace filename underscores with spaces, but preserve valid
+    Telegram @usernames exactly as written.
     """
-    return " ".join(str(filename or "").replace("_", " ").split())
+    value = str(filename or "")
+    usernames = []
+
+    def protect_username(match):
+        usernames.append(match.group(0))
+        return f"ZZZTELEGRAMUSERNAME{len(usernames) - 1}ZZZ"
+
+    value = re.sub(
+        r"@[A-Za-z][A-Za-z0-9_]{3,30}[A-Za-z0-9]",
+        protect_username,
+        value,
+    )
+    value = " ".join(value.replace("_", " ").split())
+
+    for index, username in enumerate(usernames):
+        value = value.replace(f"ZZZTELEGRAMUSERNAME{index}ZZZ", username)
+
+    return value
 
 
 def _add_prefix_suffix(filename, prefix=None, suffix=None):
@@ -291,8 +309,7 @@ async def doc(bot, update):
         )
     )
 
-    # Final filename guard: never send an underscore to Telegram.
-    new_filename = new_filename.replace("_", " ")
+    # Keep Telegram usernames intact; _normalize_filename handles other underscores.
     print(f"Requested upload filename: {new_filename!r}")
 
     work_dir = os.path.abspath(
