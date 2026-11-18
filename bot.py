@@ -1,4 +1,3 @@
-
 from datetime import datetime
 from pytz import timezone
 
@@ -26,6 +25,10 @@ class Bot(Client):
             workers=200,
             plugins={"root": "plugins"},
             sleep_threshold=15,
+            # Permit parallel Telegram file-part transfers. This can improve
+            # download throughput while keeping concurrency at a conservative
+            # level to avoid overwhelming the Railway instance/network.
+            max_concurrent_transmissions=4,
         )
 
     async def start(self):
