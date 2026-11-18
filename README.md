@@ -99,3 +99,4 @@ status - Check bot status [FOR ADMINS USE ONLY].
 - [PayPal](https://paypal.me/jishudeveloper/2.50USD)
 - [PhonePe](https://graph.org/file/6822df5af3a2e80637172.jpg)
 - [UPI](https://graph.org/file/b831109be4acff5c966d2.jpg)
+Auto deploy test
