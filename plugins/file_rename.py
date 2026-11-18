@@ -49,15 +49,12 @@ def _safe_remove(path):
         try:
             os.remove(path)
         except OSError as error:
-            print(f"Cleanup error for {path}: {error}")
+            print(f"Cleanup error: {error}")
 
 
 def _safe_remove_dir(path):
     if path and os.path.isdir(path):
-        try:
-            shutil.rmtree(path, ignore_errors=True)
-        except OSError as error:
-            print(f"Directory cleanup error for {path}: {error}")
+        shutil.rmtree(path, ignore_errors=True)
 
 
 @Client.on_message(filters.private & (filters.document | filters.audio | filters.video))
@@ -70,7 +67,6 @@ async def rename_start(client, message):
     extension = os.path.splitext(filename)[1] or "Not available"
     mime_type = getattr(media, "mime_type", None) or "Not available"
     dc_id = getattr(media, "dc_id", None)
-    dc_text = str(dc_id) if dc_id is not None else "Not available"
 
     if media.file_size and media.file_size > 2000 * 1024 * 1024:
         return await message.reply_text(
@@ -84,7 +80,7 @@ async def rename_start(client, message):
         f"◈ <b>File Size:</b> <code>{humanbytes(media.file_size)}</code>\n"
         f"◈ <b>File Extension:</b> <code>{html.escape(extension)}</code>\n"
         f"◈ <b>MIME Type:</b> <code>{html.escape(mime_type)}</code>\n"
-        f"◈ <b>DC ID:</b> <code>{html.escape(dc_text)}</code>"
+        f"◈ <b>DC ID:</b> <code>{dc_id if dc_id is not None else 'Not available'}</code>"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -107,7 +103,7 @@ async def rename_start(client, message):
             )
             return
         except Exception as error:
-            print(f"Could not display media thumbnail: {error}")
+            print(f"Thumbnail display error: {error}")
 
     await message.reply_text(
         text=info,
@@ -122,11 +118,10 @@ async def start_rename_prompt(client, query):
     original_file = query.message.reply_to_message if query.message else None
 
     if not original_file:
-        await query.answer(
-            "Original file not found. Please send it again.",
+        return await query.answer(
+            "Original file not found.",
             show_alert=True,
         )
-        return
 
     await original_file.reply_text(
         "Please Enter The New Filename.",
@@ -162,10 +157,9 @@ async def refunc(client, message):
         return
 
     if "/" in new_name or "\\" in new_name or "\x00" in new_name:
-        await message.reply_text(
+        return await message.reply_text(
             "Please send only a filename, without folder paths."
         )
-        return
 
     await message.delete()
 
@@ -174,10 +168,7 @@ async def refunc(client, message):
         reply_message.id,
     )
 
-    original_file = (
-        prompt_message.reply_to_message
-        if prompt_message else None
-    )
+    original_file = prompt_message.reply_to_message if prompt_message else None
 
     if not original_file:
         return await message.reply_text(
@@ -193,49 +184,34 @@ async def refunc(client, message):
 
     if not os.path.splitext(new_name)[1]:
         original_filename = media.file_name or "file.mkv"
-        original_extension = os.path.splitext(original_filename)[1] or ".mkv"
-        new_name += original_extension
+        new_name += os.path.splitext(original_filename)[1] or ".mkv"
 
     await reply_message.delete()
 
     saved_mode = await jishubotz.get_output_mode(message.from_user.id)
 
-    if saved_mode == "document":
-        status = await message.reply(
-            text=_selection_message(new_name),
-            reply_to_message_id=original_file.id,
-            parse_mode=ParseMode.DISABLED,
-        )
+    if saved_mode in ("document", "video"):
+        if saved_mode == "video" and original_file.media not in (
+            MessageMediaType.VIDEO,
+            MessageMediaType.DOCUMENT,
+        ):
+            saved_mode = None
+        else:
+            status = await message.reply(
+                text=_selection_message(new_name),
+                reply_to_message_id=original_file.id,
+                parse_mode=ParseMode.DISABLED,
+            )
 
-        automatic_update = SimpleNamespace(
-            message=status,
-            data="upload_document",
-            from_user=message.from_user,
-            original_file=original_file,
-        )
+            automatic_update = SimpleNamespace(
+                message=status,
+                data=f"upload_{saved_mode}",
+                from_user=message.from_user,
+                original_file=original_file,
+            )
 
-        await doc(client, automatic_update)
-        return
-
-    if saved_mode == "video" and original_file.media in (
-        MessageMediaType.VIDEO,
-        MessageMediaType.DOCUMENT,
-    ):
-        status = await message.reply(
-            text=_selection_message(new_name),
-            reply_to_message_id=original_file.id,
-            parse_mode=ParseMode.DISABLED,
-        )
-
-        automatic_update = SimpleNamespace(
-            message=status,
-            data="upload_video",
-            from_user=message.from_user,
-            original_file=original_file,
-        )
-
-        await doc(client, automatic_update)
-        return
+            await doc(client, automatic_update)
+            return
 
     buttons = [
         [
@@ -256,7 +232,6 @@ async def refunc(client, message):
                 callback_data="upload_video",
             )
         ])
-
     elif original_file.media == MessageMediaType.AUDIO:
         buttons.append([
             InlineKeyboardButton(
@@ -280,15 +255,13 @@ async def doc(bot, update):
 
     if marker not in status_text:
         return await update.message.edit(
-            "Could not read the selected filename. Please send the file again."
+            "Could not read the selected filename."
         )
 
     requested_filename = status_text.split(marker, 1)[1].strip()
 
     if not requested_filename:
-        return await update.message.edit(
-            "Filename is empty. Please send the file again."
-        )
+        return await update.message.edit("Filename is empty.")
 
     if (
         "/" in requested_filename
@@ -306,7 +279,9 @@ async def doc(bot, update):
         suffix,
     )
 
-    # Give every rename task its own unique working directory.
+    # Keep the exact filename supplied by the user.
+    print(f"Requested upload filename: {new_filename!r}")
+
     work_dir = os.path.abspath(
         os.path.join(
             "downloads",
@@ -330,13 +305,12 @@ async def doc(bot, update):
     if original_file is None:
         _safe_remove_dir(work_dir)
         return await update.message.edit(
-            "Download error: Original file message was not found. Please send the file again."
+            "Original file message was not found."
         )
 
     status = await update.message.edit("🚀 Try To Download... ⚡")
 
     try:
-        # Ensure the destination directory exists immediately before download.
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         downloaded_path = await bot.download_media(
@@ -351,9 +325,7 @@ async def doc(bot, update):
         )
 
         if not downloaded_path or not os.path.isfile(downloaded_path):
-            raise FileNotFoundError(
-                "Downloaded file was not created. Please try again."
-            )
+            raise FileNotFoundError("Downloaded file was not created.")
 
         file_path = os.path.abspath(downloaded_path)
 
@@ -409,7 +381,7 @@ async def doc(bot, update):
                     duration = parsed_metadata.get("duration").seconds
 
         except Exception as error:
-            print(f"Could not read media duration: {error}")
+            print(f"Duration error: {error}")
 
         finally:
             if parser:
@@ -418,9 +390,7 @@ async def doc(bot, update):
         media = _get_media(original_file)
 
         if not media:
-            return await status.edit(
-                "Could not read the original media details."
-            )
+            return await status.edit("Could not read original media details.")
 
         custom_caption = await jishubotz.get_caption(
             update.message.chat.id
@@ -458,7 +428,7 @@ async def doc(bot, update):
 
                 except Exception as error:
                     thumb_path = None
-                    print(f"Could not prepare custom thumbnail: {error}")
+                    print(f"Custom thumbnail error: {error}")
 
             else:
                 try:
@@ -478,7 +448,7 @@ async def doc(bot, update):
 
                 except Exception as error:
                     thumb_path = None
-                    print(f"Could not create thumbnail: {error}")
+                    print(f"Screenshot error: {error}")
 
         await status.edit("💠 Try To Upload... ⚡")
 
@@ -488,7 +458,6 @@ async def doc(bot, update):
             "caption": caption,
             "parse_mode": caption_parse_mode,
             "thumb": thumb_path,
-            "file_name": new_filename,
             "progress": progress_for_pyrogram,
             "progress_args": (
                 "💠 Try To Uploading... ⚡",
@@ -497,10 +466,12 @@ async def doc(bot, update):
             ),
         }
 
+        # Pass the exact filename directly to each upload method.
         if output_type == "document":
             await bot.send_document(
                 update.message.chat.id,
                 document=upload_path,
+                file_name=new_filename,
                 **common,
             )
 
@@ -509,6 +480,7 @@ async def doc(bot, update):
                 update.message.chat.id,
                 video=upload_path,
                 duration=duration,
+                file_name=new_filename,
                 **common,
             )
 
@@ -517,13 +489,12 @@ async def doc(bot, update):
                 update.message.chat.id,
                 audio=upload_path,
                 duration=duration,
+                file_name=new_filename,
                 **common,
             )
 
         else:
-            return await status.edit(
-                "Unknown output format selected."
-            )
+            return await status.edit("Unknown output format selected.")
 
         await status.delete()
 
@@ -531,7 +502,7 @@ async def doc(bot, update):
         await sleep(error.value)
         try:
             await status.edit(
-                "Telegram asked the bot to wait. Please try the rename again."
+                "Telegram asked the bot to wait. Please try again."
             )
         except Exception:
             pass
@@ -545,14 +516,7 @@ async def doc(bot, update):
             pass
 
     finally:
-        # Remove this task's files without affecting another active download.
         _safe_remove(thumb_path)
         _safe_remove(screenshot_path)
-
-        if thumb_path and os.path.abspath(thumb_path).startswith(work_dir):
-            pass
-        else:
-            _safe_remove(thumb_path)
-
         _safe_remove_dir(work_dir)
         
