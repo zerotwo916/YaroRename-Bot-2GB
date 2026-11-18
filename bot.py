@@ -28,7 +28,7 @@ class Bot(Client):
             # Permit parallel Telegram file-part transfers. This can improve
             # download throughput while keeping concurrency at a conservative
             # level to avoid overwhelming the Railway instance/network.
-            max_concurrent_transmissions=4,
+            max_concurrent_transmissions=8,
         )
 
     async def start(self):
