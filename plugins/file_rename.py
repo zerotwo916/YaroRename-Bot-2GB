@@ -72,6 +72,30 @@ def _selection_message(filename):
     )
 
 
+def _format_filename_caption(filename):
+    """
+    Show the filename as code while rendering a Telegram @username
+    inside it as a clickable blue link.
+    """
+    match = re.search(
+        r"@[A-Za-z][A-Za-z0-9_]{3,30}[A-Za-z0-9]",
+        filename,
+    )
+
+    if not match:
+        return f"<code>{html.escape(filename)}</code>"
+
+    before = html.escape(filename[:match.start()])
+    username = match.group(0)
+    after = html.escape(filename[match.end():])
+
+    return (
+        f"<code>{before}</code>"
+        f'<a href="https://t.me/{username[1:]}">{html.escape(username)}</a>'
+        f"<code>{after}</code>"
+    )
+
+
 def _safe_remove(path):
     if path and os.path.isfile(path):
         try:
@@ -445,7 +469,7 @@ async def doc(bot, update):
                 )
 
         else:
-            caption = f"<code>{html.escape(new_filename)}</code>"
+            caption = _format_filename_caption(new_filename)
             caption_parse_mode = ParseMode.HTML
 
         if media.thumbs or custom_thumb:
