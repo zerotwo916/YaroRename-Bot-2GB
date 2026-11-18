@@ -30,11 +30,26 @@ def _get_media(message):
     return getattr(message, message.media.value, None)
 
 
-def _add_prefix_suffix(filename, prefix=None, suffix=None):
+def _normalize_filename(filename):
+    """
+    Normalize filenames before saving/uploading:
+    convert underscores to spaces and collapse repeated whitespace.
+    Keep the file extension intact.
+    """
     stem, extension = os.path.splitext(filename)
-    prefix = prefix or ""
-    suffix = suffix or ""
-    return f"{prefix}{stem}{(' ' + suffix) if suffix else ''}{extension}"
+    stem = stem.replace("_", " ")
+    stem = " ".join(stem.split())
+    extension = extension.strip()
+    return f"{stem}{extension}"
+
+
+def _add_prefix_suffix(filename, prefix=None, suffix=None):
+    filename = _normalize_filename(filename)
+    stem, extension = os.path.splitext(filename)
+    prefix = _normalize_filename(prefix or "")
+    suffix = _normalize_filename(suffix or "")
+    result = f"{prefix}{stem}{(' ' + suffix) if suffix else ''}{extension}"
+    return _normalize_filename(result)
 
 
 def _selection_message(filename):
