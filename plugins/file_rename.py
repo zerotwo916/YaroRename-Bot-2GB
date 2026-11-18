@@ -32,15 +32,10 @@ def _get_media(message):
 
 def _normalize_filename(filename):
     """
-    Normalize filenames before saving/uploading:
-    convert underscores to spaces and collapse repeated whitespace.
-    Keep the file extension intact.
+    Remove underscores from the complete filename, including any
+    prefix/suffix, and replace them with single spaces.
     """
-    stem, extension = os.path.splitext(filename)
-    stem = stem.replace("_", " ")
-    stem = " ".join(stem.split())
-    extension = extension.strip()
-    return f"{stem}{extension}"
+    return " ".join(str(filename or "").replace("_", " ").split())
 
 
 def _add_prefix_suffix(filename, prefix=None, suffix=None):
@@ -288,13 +283,16 @@ async def doc(bot, update):
     prefix = await jishubotz.get_prefix(update.message.chat.id)
     suffix = await jishubotz.get_suffix(update.message.chat.id)
 
-    new_filename = _add_prefix_suffix(
-        requested_filename,
-        prefix,
-        suffix,
+    new_filename = _normalize_filename(
+        _add_prefix_suffix(
+            requested_filename,
+            prefix,
+            suffix,
+        )
     )
 
-    # Keep the exact filename supplied by the user.
+    # Final filename guard: never send an underscore to Telegram.
+    new_filename = new_filename.replace("_", " ")
     print(f"Requested upload filename: {new_filename!r}")
 
     work_dir = os.path.abspath(
