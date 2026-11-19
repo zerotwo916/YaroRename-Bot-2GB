@@ -490,7 +490,7 @@ async def doc(bot, update):
                 update.message.chat.id,
                 video=upload_path,
                 duration=duration,
-                file_name=new_filename,
+                file_name=upload_filename,
                 **common,
             )
 
@@ -499,7 +499,7 @@ async def doc(bot, update):
                 update.message.chat.id,
                 audio=upload_path,
                 duration=duration,
-                file_name=new_filename,
+                file_name=upload_filename,
                 **common,
             )
 
