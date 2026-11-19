@@ -83,17 +83,17 @@ def _format_filename_caption(filename):
     )
 
     if not match:
-        return html.escape(filename)
+        return f"<code>{html.escape(filename)}</code>"
 
     before = html.escape(filename[:match.start()])
     username = match.group(0)
     after = html.escape(filename[match.end():])
 
-    # Keep the filename as ordinary caption text; only the username is linked.
+    # Match the filename's monospace style; keep only the @username clickable.
     return (
-        f"{before}"
+        f"<code>{before}</code>"
         f'<a href="https://t.me/{username[1:]}">{html.escape(username)}</a>'
-        f"{after}"
+        f"<code>{after}</code>"
     )
 
 
