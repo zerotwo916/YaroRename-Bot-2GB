@@ -108,47 +108,56 @@ async def send_msg(user_id, message):
 
 @Client.on_message(filters.private & filters.command("clear"))
 async def clear_private_chat(client, message):
-    """Delete recent messages in this private bot chat without changing saved settings."""
+    """Clear recent messages in this private chat; saved bot settings remain untouched."""
     chat_id = message.chat.id
     cutoff = datetime.datetime.now(timezone.utc) - timedelta(hours=48)
     message_ids = []
-    deleted = 0
 
-    async for chat_message in client.get_chat_history(chat_id):
-        sent_at = chat_message.date
-        if sent_at and sent_at.tzinfo is None:
-            sent_at = sent_at.replace(tzinfo=timezone.utc)
+    try:
+        # History is newest-first, so stop as soon as messages exceed Telegram's
+        # 48-hour deletion window instead of scanning the entire chat forever.
+        async for chat_message in client.get_chat_history(chat_id):
+            sent_at = chat_message.date
+            if sent_at and sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.utc)
 
-        # Telegram does not allow bots to delete messages older than 48 hours.
-        if not sent_at or sent_at < cutoff:
-            continue
+            if not sent_at or sent_at < cutoff:
+                break
 
-        message_ids.append(chat_message.id)
+            message_ids.append(chat_message.id)
 
-        if len(message_ids) >= 100:
+            if len(message_ids) >= 100:
+                try:
+                    await client.delete_messages(chat_id, message_ids)
+                except Exception:
+                    for message_id in message_ids:
+                        try:
+                            await client.delete_messages(chat_id, message_id)
+                        except Exception as error:
+                            logger.warning(
+                                "Could not delete message %s: %s",
+                                message_id,
+                                error,
+                            )
+                message_ids = []
+
+        if message_ids:
             try:
                 await client.delete_messages(chat_id, message_ids)
-                deleted += len(message_ids)
             except Exception:
                 for message_id in message_ids:
                     try:
                         await client.delete_messages(chat_id, message_id)
-                        deleted += 1
                     except Exception as error:
-                        logger.warning("Could not delete message %s: %s", message_id, error)
-            message_ids = []
+                        logger.warning(
+                            "Could not delete message %s: %s",
+                            message_id,
+                            error,
+                        )
 
-    if message_ids:
+    except Exception as error:
+        logger.exception(" /clear failed for chat %s", chat_id)
         try:
-            await client.delete_messages(chat_id, message_ids)
-            deleted += len(message_ids)
+            await message.reply_text(f"Clear failed: {error}")
         except Exception:
-            for message_id in message_ids:
-                try:
-                    await client.delete_messages(chat_id, message_id)
-                    deleted += 1
-                except Exception as error:
-                    logger.warning("Could not delete message %s: %s", message_id, error)
-
-    logger.info(" /clear removed %s recent messages from chat %s", deleted, chat_id)
-
+            pass
