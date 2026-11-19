@@ -1,5 +1,6 @@
 
 import os, sys, time, asyncio, logging, datetime
+import aiohttp
 from datetime import timezone, timedelta
 from config import Config
 from pyrogram import Client, filters
@@ -106,58 +107,96 @@ async def send_msg(user_id, message):
 # Developer @JishuDeveloper
 # Contact @MadflixSupport
 
+# Track private-chat message IDs as updates arrive. Telegram bots cannot read
+# chat history through MTProto, so /clear can only remove messages observed
+# since this process started (and still inside Telegram's 48-hour window).
+_tracked_private_messages = {}
+
+
+@Client.on_message(filters.private, group=999)
+async def track_private_chat_messages(_, message):
+    try:
+        sent_at = message.date
+        if sent_at and sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        timestamp = sent_at.timestamp() if sent_at else time.time()
+        chat_id = message.chat.id
+        messages = _tracked_private_messages.setdefault(chat_id, {})
+        cutoff_timestamp = time.time() - (48 * 60 * 60)
+
+        # Keep only deletable recent messages and cap memory use per chat.
+        messages = {
+            message_id: created_at
+            for message_id, created_at in messages.items()
+            if created_at >= cutoff_timestamp
+        }
+        messages[message.id] = timestamp
+
+        if len(messages) > 5000:
+            messages = dict(sorted(messages.items(), key=lambda item: item[1])[-5000:])
+
+        _tracked_private_messages[chat_id] = messages
+    except Exception:
+        logger.exception("Could not track private message ID")
+
+
+async def _delete_private_message(session, chat_id, message_id, semaphore):
+    url = f"https://api.telegram.org/bot{Config.BOT_TOKEN}/deleteMessage"
+    async with semaphore:
+        try:
+            async with session.post(
+                url,
+                json={"chat_id": chat_id, "message_id": message_id},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as response:
+                result = await response.json()
+                if response.status == 200 and result.get("ok"):
+                    return message_id, True
+                logger.warning(
+                    "Telegram could not delete private message %s: %s",
+                    message_id,
+                    result.get("description", "Unknown Bot API error"),
+                )
+        except Exception:
+            logger.exception("Delete request failed for message %s", message_id)
+
+    return message_id, False
+
+
 @Client.on_message(filters.private & filters.command("clear"))
 async def clear_private_chat(client, message):
-    """Clear recent messages in this private chat; saved bot settings remain untouched."""
+    """Delete tracked recent private-chat messages without touching saved settings."""
     chat_id = message.chat.id
-    cutoff = datetime.datetime.now(timezone.utc) - timedelta(hours=48)
-    message_ids = []
+    now = time.time()
+    cutoff_timestamp = now - (48 * 60 * 60)
 
+    # The tracker runs in a later handler group, so include /clear explicitly.
+    tracked = _tracked_private_messages.setdefault(chat_id, {})
+    tracked[message.id] = now
+    message_ids = [
+        message_id
+        for message_id, created_at in tracked.items()
+        if created_at >= cutoff_timestamp
+    ]
+
+    if not message_ids:
+        return
+
+    semaphore = asyncio.Semaphore(10)
     try:
-        # History is newest-first, so stop as soon as messages exceed Telegram's
-        # 48-hour deletion window instead of scanning the entire chat forever.
-        async for chat_message in client.get_chat_history(chat_id):
-            sent_at = chat_message.date
-            if sent_at and sent_at.tzinfo is None:
-                sent_at = sent_at.replace(tzinfo=timezone.utc)
+        async with aiohttp.ClientSession() as session:
+            results = await asyncio.gather(
+                *(
+                    _delete_private_message(session, chat_id, message_id, semaphore)
+                    for message_id in message_ids
+                )
+            )
 
-            if not sent_at or sent_at < cutoff:
-                break
-
-            message_ids.append(chat_message.id)
-
-            if len(message_ids) >= 100:
-                try:
-                    await client.delete_messages(chat_id, message_ids)
-                except Exception:
-                    for message_id in message_ids:
-                        try:
-                            await client.delete_messages(chat_id, message_id)
-                        except Exception as error:
-                            logger.warning(
-                                "Could not delete message %s: %s",
-                                message_id,
-                                error,
-                            )
-                message_ids = []
-
-        if message_ids:
-            try:
-                await client.delete_messages(chat_id, message_ids)
-            except Exception:
-                for message_id in message_ids:
-                    try:
-                        await client.delete_messages(chat_id, message_id)
-                    except Exception as error:
-                        logger.warning(
-                            "Could not delete message %s: %s",
-                            message_id,
-                            error,
-                        )
-
-    except Exception as error:
+        # Retain failed IDs so a later /clear can retry them.
+        _tracked_private_messages[chat_id] = {
+            message_id: tracked[message_id]
+            for message_id, deleted in results
+            if not deleted and message_id in tracked
+        }
+    except Exception:
         logger.exception(" /clear failed for chat %s", chat_id)
-        try:
-            await message.reply_text(f"Clear failed: {error}")
-        except Exception:
-            pass
