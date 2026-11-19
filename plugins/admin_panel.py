@@ -1,5 +1,6 @@
 
 import os, sys, time, asyncio, logging, datetime
+from datetime import timezone, timedelta
 from config import Config
 from pyrogram import Client, filters
 from helper.database import jishubotz
@@ -104,3 +105,50 @@ async def send_msg(user_id, message):
 # Backup Channel @JishuBotz
 # Developer @JishuDeveloper
 # Contact @MadflixSupport
+
+@Client.on_message(filters.private & filters.command("clear"))
+async def clear_private_chat(client, message):
+    """Delete recent messages in this private bot chat without changing saved settings."""
+    chat_id = message.chat.id
+    cutoff = datetime.datetime.now(timezone.utc) - timedelta(hours=48)
+    message_ids = []
+    deleted = 0
+
+    async for chat_message in client.get_chat_history(chat_id):
+        sent_at = chat_message.date
+        if sent_at and sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+
+        # Telegram does not allow bots to delete messages older than 48 hours.
+        if not sent_at or sent_at < cutoff:
+            continue
+
+        message_ids.append(chat_message.id)
+
+        if len(message_ids) >= 100:
+            try:
+                await client.delete_messages(chat_id, message_ids)
+                deleted += len(message_ids)
+            except Exception:
+                for message_id in message_ids:
+                    try:
+                        await client.delete_messages(chat_id, message_id)
+                        deleted += 1
+                    except Exception as error:
+                        logger.warning("Could not delete message %s: %s", message_id, error)
+            message_ids = []
+
+    if message_ids:
+        try:
+            await client.delete_messages(chat_id, message_ids)
+            deleted += len(message_ids)
+        except Exception:
+            for message_id in message_ids:
+                try:
+                    await client.delete_messages(chat_id, message_id)
+                    deleted += 1
+                except Exception as error:
+                    logger.warning("Could not delete message %s: %s", message_id, error)
+
+    logger.info(" /clear removed %s recent messages from chat %s", deleted, chat_id)
+
