@@ -1,6 +1,5 @@
 
 import os
-import re
 import time
 import random
 import html
@@ -31,38 +30,11 @@ def _get_media(message):
     return getattr(message, message.media.value, None)
 
 
-def _normalize_filename(filename):
-    """
-    Replace filename underscores with spaces, but preserve valid
-    Telegram @usernames exactly as written.
-    """
-    value = str(filename or "")
-    usernames = []
-
-    def protect_username(match):
-        usernames.append(match.group(0))
-        return f"ZZZTELEGRAMUSERNAME{len(usernames) - 1}ZZZ"
-
-    value = re.sub(
-        r"@[A-Za-z][A-Za-z0-9_]{3,30}[A-Za-z0-9]",
-        protect_username,
-        value,
-    )
-    value = " ".join(value.replace("_", " ").split())
-
-    for index, username in enumerate(usernames):
-        value = value.replace(f"ZZZTELEGRAMUSERNAME{index}ZZZ", username)
-
-    return value
-
-
 def _add_prefix_suffix(filename, prefix=None, suffix=None):
-    filename = _normalize_filename(filename)
     stem, extension = os.path.splitext(filename)
-    prefix = _normalize_filename(prefix or "")
-    suffix = _normalize_filename(suffix or "")
-    result = f"{prefix}{stem}{(' ' + suffix) if suffix else ''}{extension}"
-    return _normalize_filename(result)
+    prefix = prefix or ""
+    suffix = suffix or ""
+    return f"{prefix}{stem}{(' ' + suffix) if suffix else ''}{extension}"
 
 
 def _selection_message(filename):
@@ -326,15 +298,12 @@ async def doc(bot, update):
     prefix = await jishubotz.get_prefix(update.message.chat.id)
     suffix = await jishubotz.get_suffix(update.message.chat.id)
 
-    new_filename = _normalize_filename(
-        _add_prefix_suffix(
-            requested_filename,
-            prefix,
-            suffix,
-        )
+    new_filename = _add_prefix_suffix(
+        requested_filename,
+        prefix,
+        suffix,
     )
 
-    # Keep Telegram usernames intact; _normalize_filename handles other underscores.
     print(f"Requested upload filename: {new_filename!r}")
 
     work_dir = os.path.abspath(
