@@ -45,11 +45,28 @@ def _selection_message(filename):
 
 
 def _limit_filename_length(filename, max_stem_length=60):
-    """Keep the extension and limit the filename stem to 60 characters."""
+    """Shorten long filenames at word boundaries and preserve the extension."""
     stem, extension = os.path.splitext(filename)
+
     if len(stem) <= max_stem_length:
         return filename
-    return f"{stem[:max_stem_length]}{extension}"
+
+    words = stem.split()
+    kept_words = []
+
+    for word in words:
+        candidate = " ".join(kept_words + [word])
+        if len(candidate) > max_stem_length:
+            break
+        kept_words.append(word)
+
+    shortened_stem = " ".join(kept_words)
+
+    # If the first word alone is too long, cap that single unbroken word.
+    if not shortened_stem:
+        shortened_stem = stem[:max_stem_length]
+
+    return f"{shortened_stem}{extension}"
 
 
 def _safe_remove(path):
@@ -424,8 +441,9 @@ async def doc(bot, update):
                 )
 
         else:
-            # Send the original caption unchanged; Telegram handles @usernames.
-            caption = new_filename
+            # Keep exactly what the user entered as the caption.
+            # Telegram automatically detects @usernames in plain text.
+            caption = requested_filename
             caption_parse_mode = None
 
         if media.thumbs or custom_thumb:
