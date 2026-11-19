@@ -1,6 +1,5 @@
 
 import os
-import re
 import time
 import random
 import html
@@ -45,29 +44,12 @@ def _selection_message(filename):
     )
 
 
-def _format_filename_caption(filename):
-    """
-    Show the filename as code while rendering a Telegram @username
-    inside it as a clickable blue link.
-    """
-    match = re.search(
-        r"@[A-Za-z][A-Za-z0-9_]{3,30}[A-Za-z0-9]",
-        filename,
-    )
-
-    if not match:
-        return f"<code>{html.escape(filename)}</code>"
-
-    before = html.escape(filename[:match.start()])
-    username = match.group(0)
-    after = html.escape(filename[match.end():])
-
-    # Match the filename's monospace style; keep only the @username clickable.
-    return (
-        f"<code>{before}</code>"
-        f'<a href="https://t.me/{username[1:]}">{html.escape(username)}</a>'
-        f"<code>{after}</code>"
-    )
+def _limit_filename_length(filename, max_stem_length=60):
+    """Keep the extension and limit the filename stem to 60 characters."""
+    stem, extension = os.path.splitext(filename)
+    if len(stem) <= max_stem_length:
+        return filename
+    return f"{stem[:max_stem_length]}{extension}"
 
 
 def _safe_remove(path):
@@ -305,7 +287,9 @@ async def doc(bot, update):
         suffix,
     )
 
+    upload_filename = _limit_filename_length(new_filename)
     print(f"Requested upload filename: {new_filename!r}")
+    print(f"Telegram upload filename: {upload_filename!r}")
 
     work_dir = os.path.abspath(
         os.path.join(
@@ -440,8 +424,9 @@ async def doc(bot, update):
                 )
 
         else:
-            caption = _format_filename_caption(new_filename)
-            caption_parse_mode = ParseMode.HTML
+            # Send the original caption unchanged; Telegram handles @usernames.
+            caption = new_filename
+            caption_parse_mode = None
 
         if media.thumbs or custom_thumb:
             if custom_thumb:
@@ -496,7 +481,7 @@ async def doc(bot, update):
             await bot.send_document(
                 update.message.chat.id,
                 document=upload_path,
-                file_name=new_filename,
+                file_name=upload_filename,
                 **common,
             )
 
