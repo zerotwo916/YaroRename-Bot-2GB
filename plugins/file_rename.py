@@ -45,28 +45,13 @@ def _selection_message(filename):
 
 
 def _limit_filename_length(filename, max_stem_length=60):
-    """Shorten long filenames at word boundaries and preserve the extension."""
+    """Shorten long filenames and preserve the extension."""
     stem, extension = os.path.splitext(filename)
 
     if len(stem) <= max_stem_length:
         return filename
 
-    words = stem.split()
-    kept_words = []
-
-    for word in words:
-        candidate = " ".join(kept_words + [word])
-        if len(candidate) > max_stem_length:
-            break
-        kept_words.append(word)
-
-    shortened_stem = " ".join(kept_words)
-
-    # If the first word alone is too long, cap that single unbroken word.
-    if not shortened_stem:
-        shortened_stem = stem[:max_stem_length]
-
-    return f"{shortened_stem}{extension}"
+    return f"{stem[:max_stem_length]}{extension}"
 
 
 def _safe_remove(path):
