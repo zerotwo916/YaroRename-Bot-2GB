@@ -44,7 +44,7 @@ def _selection_message(filename):
     )
 
 
-def _limit_filename_length(filename, max_stem_length=60):
+def _limit_filename_length(filename, max_stem_length=90):
     """Shorten long filenames and preserve the extension."""
     stem, extension = os.path.splitext(filename)
 
