@@ -25,6 +25,9 @@ from helper.utils import progress_for_pyrogram, convert, humanbytes
 from helper.database import jishubotz
 
 
+_PENDING_RENAMES = {}
+
+
 def _get_media(message):
     if not message or not message.media:
         return None
@@ -144,46 +147,65 @@ async def rename_start(client, message):
     ])
 
     thumbs = getattr(media, "thumbs", None) or []
+    pending = {
+        "file_id": media.file_id,
+        "media_type": message.media,
+        "file_name": filename,
+        "file_size": media.file_size,
+        "mime_type": mime_type,
+        "dc_id": dc_id,
+        "thumbs": thumbs,
+        "original_message_id": message.id,
+    }
 
+    info_message = None
     if thumbs:
         try:
-            await message.reply_photo(
+            info_message = await message.reply_photo(
                 photo=thumbs[-1].file_id,
                 caption=info,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
                 reply_to_message_id=message.id,
             )
-            return
         except Exception as error:
             print(f"Thumbnail display error: {error}")
 
-    await message.reply_text(
-        text=info,
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
-        reply_to_message_id=message.id,
-    )
+    if info_message is None:
+        info_message = await message.reply_text(
+            text=info,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            reply_to_message_id=message.id,
+        )
+
+    _PENDING_RENAMES[info_message.id] = pending
+
+    # Remove the user's original upload after the bot has shown its controls.
+    try:
+        await message.delete()
+    except Exception as error:
+        print(f"Original upload delete error: {error}")
 
 
 @Client.on_callback_query(filters.regex("^rename_file$"))
 async def start_rename_prompt(client, query):
-    original_file = query.message.reply_to_message if query.message else None
-
-    if not original_file:
+    pending = _PENDING_RENAMES.get(query.message.id) if query.message else None
+    if not pending:
         return await query.answer(
-            "Original file not found.",
+            "File information expired. Please send the file again.",
             show_alert=True,
         )
 
-    await original_file.reply_text(
+    prompt = await query.message.reply_text(
         "Please Enter The New Filename.",
         reply_markup=ForceReply(True),
-        quote=True,
         parse_mode=ParseMode.DISABLED,
     )
+    _PENDING_RENAMES[prompt.id] = pending
 
     await query.message.delete()
+    _PENDING_RENAMES.pop(query.message.id, None)
     await query.answer("Now send the new filename.")
 
 
@@ -191,6 +213,7 @@ async def start_rename_prompt(client, query):
 async def cancel_rename(client, query):
     await query.answer("Rename cancelled.")
     if query.message:
+        _PENDING_RENAMES.pop(query.message.id, None)
         await query.message.delete()
 
 
@@ -216,24 +239,27 @@ async def refunc(client, message):
 
     await message.delete()
 
-    prompt_message = await client.get_messages(
-        message.chat.id,
-        reply_message.id,
+    pending = _PENDING_RENAMES.get(reply_message.id)
+    if not pending:
+        return await message.reply_text(
+            "File information expired. Please send the file again."
+        )
+
+    media = SimpleNamespace(
+        file_id=pending["file_id"],
+        file_name=pending["file_name"],
+        file_size=pending["file_size"],
+        mime_type=pending["mime_type"],
+        dc_id=pending["dc_id"],
+        thumbs=pending["thumbs"],
     )
+    original_file = SimpleNamespace(
+        id=pending["original_message_id"],
+        media=pending["media_type"],
+        **{pending["media_type"].value: media},
+    )
+    source_file_id = pending["file_id"]
 
-    original_file = prompt_message.reply_to_message if prompt_message else None
-
-    if not original_file:
-        return await message.reply_text(
-            "Could not find the original file. Please send it again."
-        )
-
-    media = _get_media(original_file)
-
-    if not media:
-        return await message.reply_text(
-            "The original message has no supported file."
-        )
 
     if not os.path.splitext(new_name)[1]:
         original_filename = media.file_name or "file.mkv"
@@ -261,6 +287,7 @@ async def refunc(client, message):
                 data=f"upload_{saved_mode}",
                 from_user=message.from_user,
                 original_file=original_file,
+                source_file_id=source_file_id,
             )
 
             await doc(client, automatic_update)
@@ -293,12 +320,12 @@ async def refunc(client, message):
             )
         ])
 
-    await message.reply(
+    selection = await message.reply(
         text=_selection_message(new_name),
-        reply_to_message_id=original_file.id,
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode=ParseMode.DISABLED,
     )
+    _PENDING_RENAMES[selection.id] = pending
 
 
 @Client.on_callback_query(filters.regex("^upload"))
@@ -353,9 +380,27 @@ async def doc(bot, update):
     screenshot_path = None
 
     original_file = getattr(update, "original_file", None)
+    source_file_id = getattr(update, "source_file_id", None)
 
     if original_file is None:
-        original_file = update.message.reply_to_message
+        pending = _PENDING_RENAMES.get(update.message.id)
+        if pending:
+            media_obj = SimpleNamespace(
+                file_id=pending["file_id"],
+                file_name=pending["file_name"],
+                file_size=pending["file_size"],
+                mime_type=pending["mime_type"],
+                dc_id=pending["dc_id"],
+                thumbs=pending["thumbs"],
+            )
+            original_file = SimpleNamespace(
+                id=pending["original_message_id"],
+                media=pending["media_type"],
+                **{pending["media_type"].value: media_obj},
+            )
+            source_file_id = pending["file_id"]
+        else:
+            original_file = update.message.reply_to_message
 
     if original_file is None:
         _safe_remove_dir(work_dir)
@@ -369,7 +414,7 @@ async def doc(bot, update):
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         downloaded_path = await bot.download_media(
-            message=original_file,
+            message=source_file_id or original_file,
             file_name=file_path,
             progress=progress_for_pyrogram,
             progress_args=(
@@ -552,6 +597,7 @@ async def doc(bot, update):
             return await status.edit("Unknown output format selected.")
 
         await status.delete()
+        _PENDING_RENAMES.pop(update.message.id, None)
 
     except FloodWait as error:
         await sleep(error.value)
