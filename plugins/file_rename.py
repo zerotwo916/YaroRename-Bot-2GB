@@ -506,6 +506,13 @@ async def doc(bot, update):
         else:
             return await status.edit("Unknown output format selected.")
 
+        # Remove the user's original forwarded/uploaded file only after
+        # the renamed file has been sent successfully.
+        try:
+            await original_file.delete()
+        except Exception as error:
+            print(f"Original file cleanup error: {error}")
+
         await status.delete()
 
     except FloodWait as error:
